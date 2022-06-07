@@ -1,6 +1,7 @@
 ﻿
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include <cuda.h>
 #include <curand_kernel.h>
@@ -42,25 +43,37 @@ __global__ void initfGENS(curandStatePhilox4_32_10_t* d_gen) {
 
     // исследуемая функция
 __device__ float f(float x) {
-    return sinf(x);
+    return x*x;
 }
 
 
     // параллельный Монте-Карло
-__global__ void parallel_monte_carlo_integrate(curandStatePhilox4_32_10_t* d_gen, int R, int n, float *d_result) {
+/* прямоугольник, каждая сторона которого содержит точку графика
+(вертикальные ассимптоты: x = id / R, x = (id + 1) / R)
+(горизонтальные ассимптоты y = 0, y = max) */
+/* бросаем N точек
+K точек попало под график
+integral = K / N * Sпрямоуг */
+__global__ void parallel_monte_carlo_integrate(curandStatePhilox4_32_10_t* d_gen, int R, int n, float* d_result) {
 
     int id = threadIdx.x + blockIdx.x * blockDim.x;
 
     for (; id < R; id += GENS) {
 
-        float segmentIntegral = 0;
+        float segmentMax = f(((float)id + (float)1) / R); // максимальное значение монотонно-возрастающей функции в отрезке
+        int k = 0; // счетчик точек, попавших под график
 
         for (int i = 0; i < n; i++) {
-            segmentIntegral += f((curand_uniform(&d_gen [id]) + id) / R) / (n * R); // интеграл по одному отрезку
-            // segmentIntegral += f(((float)curand(&d_gen [id]) / UINT_MAX + id) / R) / (n * R);
+
+            float x = ((float)curand(&d_gen [id]) / UINT_MAX + (float)id) / R; // генерация абсциссы в полосе
+            float y = (float)curand(&d_gen [id]) * segmentMax / UINT_MAX;// генерация ординаты в полосе
+
+            if (y <= f(x)) k++; // если точка под графиком, счетчик увеличивается
         }
 
-        atomicAdd(&d_result[0], segmentIntegral); // интеграл по области определения
+        float square = segmentMax / R; // площадь прямоугольника в полосе
+        float S = (float)k / n * square; // рассчет интеграла в полосе
+        atomicAdd(&d_result[0], S); // рассчет интеграла на области определения
     }
 
 }
@@ -76,7 +89,7 @@ int main() {
 
         // Монте-Карло CUDA begining
     int R; printf(" Enter number of integration lines: R = "); scanf("%d", &R);
-    float ans = 0.5; // известный ответ
+    float ans = 0.3333; // известный ответ
     float integral[1];
     float* d_result; cudaCheck(cudaMalloc((void**) &d_result, 1 * sizeof(float)));
 
@@ -120,3 +133,25 @@ int main() {
 
     return 0;
 }
+
+
+/*
+    // параллельный Монте-Карло
+__global__ void parallel_monte_carlo_integrate(curandStatePhilox4_32_10_t* d_gen, int R, int n, float *d_result) {
+
+    int id = threadIdx.x + blockIdx.x * blockDim.x;
+
+    for (; id < R; id += GENS) {
+
+        float segmentIntegral = 0;
+
+        for (int i = 0; i < n; i++) {
+            segmentIntegral += f((curand_uniform(&d_gen [id]) + id) / R) / (n * R); // интеграл по одному отрезку
+            // segmentIntegral += f(((float)curand(&d_gen [id]) / UINT_MAX + id) / R) / (n * R);
+        }
+
+        atomicAdd(&d_result[0], segmentIntegral); // интеграл по области определения
+    }
+
+}
+*/
